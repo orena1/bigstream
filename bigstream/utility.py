@@ -1,13 +1,14 @@
+import logging
 import numpy as np
 import os
 import psutil
 import SimpleITK as sitk
 import zarr
 
-from distributed import Lock
-from scipy.spatial.transform import Rotation
 from zarr import blosc
-from zarr.indexing import BasicIndexer
+
+
+logger = logging.getLogger(__name__)
 
 
 def skip_sample(image, spacing, ss_spacing):
@@ -73,11 +74,12 @@ def numpy_to_sitk(image, spacing=None, origin=None, vector=False):
         error += "Given array dtype is " + str(image.dtype)
         raise TypeError(error)
 
+    logger.info(f'Spacing used for {image.shape} image: {spacing} ({type(spacing)})')
     image = sitk.GetImageFromArray(image, isVector=vector)
     if spacing is None: spacing = np.ones(image.GetDimension())
-    image.SetSpacing(spacing[::-1])
+    image.SetSpacing(spacing[::-1].astype(float))
     if origin is None: origin = np.zeros(image.GetDimension())
-    image.SetOrigin(origin[::-1])
+    image.SetOrigin(origin[::-1].astype(float))
     return image
 
 # TODO: function that takes a numpy array and return transform type
@@ -109,13 +111,16 @@ def relative_spacing(query_shape, reference_shape, reference_spacing):
     return reference_spacing * ratio
 
 
+# TODO: this is sloppy. Function should be called "create_zarr_array" and I could
+#       do a better job of reading the zarr API and building something more comprehensive
+#       and more capable
 def create_zarr(
     path,
     shape,
     chunks,
     dtype,
+    array_path=None,
     multithreaded=False,
-    chunk_locked=False,
     client=None,
 ):
     """
@@ -124,7 +129,7 @@ def create_zarr(
     Parameters
     ----------
     path : string
-        The location of the new zarr array
+        The location of the new zarr array on disk
 
     shape : tuple
         The shape of the new zarr array
@@ -134,6 +139,9 @@ def create_zarr(
 
     dtype : a numpy.dtype object
         The data type of the new zarr array data
+
+    array_path : path within the zarr array
+        Array within the zarr store to store the data
 
     Returns
     -------
@@ -146,25 +154,13 @@ def create_zarr(
         blosc.use_threads = True
         synchronizer = zarr.ThreadSynchronizer()
     zarr_disk = zarr.open(
-        path, 'w',
+        path, 'a',
         shape=shape,
         chunks=chunks,
         dtype=dtype,
+        path=array_path,
         synchronizer=synchronizer,
     )
-
-    # this code is currently never used within bigstream
-    # keeping it aroung in case a use case comes up
-    if chunk_locked:
-        indexer = BasicIndexer(slice(None), zarr_disk)
-        keys = (zarr_disk._chunk_key(idx.chunk_coords) for idx in indexer)
-        lock = {key: Lock(key, client=client) for key in keys}
-        lock['.zarray'] = Lock('.zarray', client=client)
-        zarr_disk = zarr.open(
-            store=zarr_disk.store, path=zarr_disk.path,
-            synchronizer=lock, mode='r+',
-        )
-
     return zarr_disk
 
 

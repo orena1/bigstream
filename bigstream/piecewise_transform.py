@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 from itertools import product
 import bigstream.utility as ut
@@ -7,6 +8,9 @@ import dask.array as da
 import zarr
 import bigstream.transform as bs_transform
 from dask.distributed import as_completed
+
+
+logger = logging.getLogger(__name__)
 
 
 @cluster
@@ -144,7 +148,8 @@ def distributed_apply_transform(
                 start = np.floor(fix_origin / kwargs['transform_spacing'][iii]).astype(int)
                 stop = [s.stop for s in fix_slices] * fix_spacing / kwargs['transform_spacing'][iii]
                 stop = np.ceil(stop).astype(int)
-                transform = transform[tuple(slice(a, b) for a, b in zip(start, stop))]
+                transform_slice = tuple(slice(a, b) for a, b in zip(start, stop))
+                transform = transform[transform_slice]
                 transform_origin[iii] = start * kwargs['transform_spacing'][iii]
             new_list.append(transform)
         transform_list = new_list
@@ -169,6 +174,8 @@ def distributed_apply_transform(
         mov_origin = mov_spacing * [s.start for s in mov_slices]
 
         # resample
+        logger.info(f'Apply {len(transform_list)} transforms to {fix_slices}' +
+                    f'fix origin: {fix_origin}, mov origin: {mov_origin}')
         aligned = bs_transform.apply_transform(
             fix, mov, fix_spacing, mov_spacing,
             transform_list=transform_list,
@@ -360,17 +367,17 @@ def distributed_invert_displacement_vector_field(
     spacing,
     blocksize,
     write_path=None,
-    step=0.5,
-    iterations=10,
-    sqrt_order=2,
-    sqrt_step=0.5,
-    sqrt_iterations=5,
     cluster=None,
     cluster_kwargs={},
     temporary_directory=None,
+    **kwargs,
 ):
     """
-    Numerically find the inverse of a larger-than-memory displacement vector field
+    Numerically find the inverse of a larger-than-memory displacement vector field.
+    This function wraps bigstream.transform.invert_displacement_vector_field.
+    If you have not read the docstring for that function then you should do that first.
+    The parameters which control how your inverse is found, and therefore how long it
+    takes and how accurate it will be, are documented there.
 
     Parameters
     ----------
@@ -387,22 +394,6 @@ def distributed_invert_displacement_vector_field(
         Location on disk to write the inverted displacement field
         If None, then the inverted transform is returned in memory
         to the client process (make sure you have enough RAM if you do this!)
-
-    step : float (default: 0.5)
-        The step size used for each iteration of the stationary point algorithm
-
-    iterations : scalar int (default: 10)
-        The number of stationary point iterations to find inverse. More
-        iterations gives a more accurate inverse but takes more time.
-
-    sqrt_order : scalar int (default: 2)
-        The number of roots to take before stationary point iterations.
-
-    sqrt_step : float (default: 0.5)
-        The step size used for each iteration of the composition square root gradient descent
-
-    sqrt_iterations : scalar int (default: 5)
-        The number of iterations to find the field composition square root.
 
     cluster : ClusterWrap.cluster object (default: None)
         Only set if you have constructed your own static cluster. The default behavior
@@ -421,6 +412,11 @@ def distributed_invert_displacement_vector_field(
         in their own folder within the `temporary_directory`. The default is the
         current directory. Temporary files are removed if the function completes
         successfully.
+
+    **kwargs : passed to bigstream.transform.invert_displacement_vector_field
+        You have full control over the inversion algorithm through keyword arguments.
+        Please read the docstring for bigstream.transform.invert_displacement_vector_field
+        to understand what can be passed.
 
     Returns
     -------
@@ -475,11 +471,7 @@ def distributed_invert_displacement_vector_field(
         inverse = bs_transform.invert_displacement_vector_field(
             field,
             spacing,
-            step=step,
-            iterations=iterations,
-            sqrt_order=sqrt_order,
-            sqrt_step=sqrt_step,
-            sqrt_iterations=sqrt_iterations,
+            **kwargs,
         )
 
         # crop out overlap
